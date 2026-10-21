@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -25,6 +25,7 @@ from symbolic import extraction
 from symbolic.model import (Key, Measured, Note, Pitch, Provenance, Section, Song,
                             TempoEvent, TimeSignatureEvent, Track)
 
+from . import fastpitch
 from .analyze import Beats, KeyInfo
 
 GRIDS = ("16th", "8th", "swing8")
@@ -38,13 +39,23 @@ PYIN = {"bass": {"onset_ratio": 2.0, "fmin": 38.0, "fmax": 420.0, "frame_length"
 
 
 def transcribe_stem(wav: Path, stem: str, cache: Optional[Path] = None,
-                    gate_db: float = 30.0) -> List[Dict]:
+                    gate_db: float = 30.0,
+                    on_progress: Optional[Callable[[float], None]] = None) -> List[Dict]:
     """-> [{midi, onset, offset, confidence, ...}] in seconds. Notes quieter than
-    `gate_db` below the stem's loud passages are dropped (separation bleed)."""
+    `gate_db` below the stem's loud passages are dropped (separation bleed).
+    pYIN runs chunked across all CPU cores; `on_progress(0..1)` follows it."""
     if cache and cache.exists():
         return json.loads(cache.read_text(encoding="utf-8"))
     import librosa
-    notes = extraction.extract_pyin(str(wav), **PYIN.get(stem, PYIN_DEFAULT))
+    cfg = PYIN.get(stem, PYIN_DEFAULT)
+    two_pass = "fmin" not in cfg               # auto-register = cheap coarse pass + real pass
+
+    def chunk_done(pass_no, done, total):
+        if on_progress:
+            f = done / total
+            on_progress((0.1 * f if pass_no == 1 else 0.1 + 0.9 * f) if two_pass else f)
+
+    notes = extraction.extract_pyin(str(wav), pyin=fastpitch.ChunkedPyin(chunk_done), **cfg)
 
     y, sr = librosa.load(str(wav), sr=22050, mono=True)
     hop = 512

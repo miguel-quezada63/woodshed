@@ -126,18 +126,23 @@ def frames_to_notes(times: np.ndarray, midi_float: np.ndarray, voiced: np.ndarra
 def extract_pyin(wav_path: str, sr: int = 22050, hop: int = 256,
                  fmin: float = None, fmax: float = None,
                  auto_register: bool = True, min_confidence: float = 0.12,
-                 onset_ratio: float = 3.0, frame_length: int = 2048) -> List[Dict]:
+                 onset_ratio: float = 3.0, frame_length: int = 2048,
+                 pyin=None) -> List[Dict]:
     """pYIN melody extraction. By default it AUTO-DETECTS the register: a coarse
     wide-band pass finds the median voiced pitch, then fmin/fmax are re-bracketed
     around it (one octave each side). This prevents the classic failure on real
     high whistles, where a wide fmin lets pYIN lock onto octave-down subharmonics
-    at note boundaries. Pass explicit fmin/fmax to override."""
+    at note boundaries. Pass explicit fmin/fmax to override. `pyin` swaps in a
+    drop-in replacement for librosa.pyin (e.g. a chunked multi-process one)."""
     import librosa
+    pyin = pyin or librosa.pyin
     y, sr = librosa.load(wav_path, sr=sr, mono=True)
     lo_c2, hi_c7 = float(librosa.note_to_hz("C2")), float(librosa.note_to_hz("C7"))  # C2 floor: avoids sub-octave artifacts on clean voice/instrument input
 
     if (fmin is None or fmax is None) and auto_register:
-        f0c, _, _ = librosa.pyin(y, sr=sr, fmin=lo_c2, fmax=hi_c7, hop_length=hop)
+        # coarse grid (half-semitone bins, 4x hop): only the median is needed, and
+        # pYIN's cost grows with bins^2 - this is ~40x cheaper than a full-res pass
+        f0c, _, _ = pyin(y, sr=sr, fmin=lo_c2, fmax=hi_c7, hop_length=hop * 4, resolution=0.5)
         voiced_hz = f0c[np.isfinite(f0c)]
         if voiced_hz.size:
             med = float(np.median(voiced_hz))
@@ -146,8 +151,8 @@ def extract_pyin(wav_path: str, sr: int = 22050, hop: int = 256,
     fmin = fmin or lo_c2
     fmax = fmax or hi_c7
 
-    f0, vflag, vprob = librosa.pyin(y, sr=sr, fmin=fmin, fmax=fmax, hop_length=hop,
-                                    frame_length=frame_length)
+    f0, vflag, vprob = pyin(y, sr=sr, fmin=fmin, fmax=fmax, hop_length=hop,
+                            frame_length=frame_length)
     times = librosa.times_like(f0, sr=sr, hop_length=hop)
     midi = hz_to_midi(f0)
     voiced = np.isfinite(midi) & (vflag.astype(bool))
@@ -184,6 +189,7 @@ def estimate_tempo(wav_path: str, sr: int = 22050, notes=None):
     note onsets (gently preferring a musical 70-140 range). Fixes the common 2x error.
     Pass already-extracted `notes` to avoid a redundant pYIN pass."""
     import librosa
+    pyin = pyin or librosa.pyin
     y, sr = librosa.load(wav_path, sr=sr, mono=True)
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     base = float(np.atleast_1d(tempo)[0])
