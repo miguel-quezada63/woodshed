@@ -11,6 +11,7 @@ transposition beyond octaves is ever needed.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -116,4 +117,13 @@ def render_svg(musicxml_path: Path, width: int = 1900, scale: int = 50) -> List[
                    "pageMarginLeft": 60, "pageMarginRight": 60})
     if not tk.loadFile(str(musicxml_path)):
         raise RuntimeError(f"Verovio could not load {musicxml_path}")
-    return [tk.renderToSVG(i) for i in range(1, tk.getPageCount() + 1)]
+    return [_self_contained(tk.renderToSVG(i)) for i in range(1, tk.getPageCount() + 1)]
+
+
+def _self_contained(svg: str) -> str:
+    """Verovio's staff lines, barlines and stems are <path>s with a stroke-width but
+    no stroke color - they inherit it from the host page. Inside Gradio that color
+    isn't inherited, so the lines vanish while the note glyphs (fills) still show.
+    Pin every stroke and fill to black so the SVG renders the same anywhere."""
+    svg = re.sub(r"<path(?![^>]*\bstroke=)", '<path stroke="#000"', svg)
+    return svg.replace("<svg ", '<svg color="#000" fill="#000" ', 1)
