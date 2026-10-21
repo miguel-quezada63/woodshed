@@ -111,7 +111,12 @@ def write_midi(score: m21.stream.Score, path: Path) -> Path:
 def render_svg(musicxml_path: Path, width: int = 1900, scale: int = 50) -> List[str]:
     """MusicXML -> list of SVG pages (Verovio)."""
     import verovio
-    tk = verovio.toolkit()
+    from importlib.resources import files
+    # Verovio's default font path is per-thread and only set on the thread that
+    # imported it; Gradio runs requests on worker threads, where the fonts then
+    # "could not be loaded". Always point each toolkit at the bundled fonts.
+    tk = verovio.toolkit(False)
+    tk.setResourcePath(str(files("verovio") / "data"))
     tk.setOptions({"pageWidth": width, "pageHeight": 2970, "scale": scale,
                    "adjustPageHeight": True, "breaks": "auto", "footer": "none",
                    "pageMarginLeft": 60, "pageMarginRight": 60})
