@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-music.local/schema/song.schema.json",
+  "title": "Song",
+  "description": "Canonical symbolic representation of a piece of music. The single source of truth; audio is a disposable render off the bottom and never appears here. Designed so a TS/Vue frontend and a Python engine share one contract. Timing is canonical in INTEGER TICKS at meta.ppq; quarterLength is a derived convenience computed as tick/ppq. This makes 'unchanged element == byte-identical' exact and round-trips lossless.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "meta", "key", "sections"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semver of this document's schema. Frontend/engine gate on the major."
+    },
+    "id": { "$ref": "#/$defs/Id" },
+    "title": { "type": "string" },
+    "meta": { "$ref": "#/$defs/Meta" },
+    "key": { "$ref": "#/$defs/Key" },
+    "tempoMap": {
+      "type": "array",
+      "description": "Tempo as a function of absolute song time (ticks). Empty/one-entry = constant tempo.",
+      "items": { "$ref": "#/$defs/TempoEvent" }
+    },
+    "timeSignatureMap": {
+      "type": "array",
+      "description": "Meter as a function of absolute song time (ticks).",
+      "items": { "$ref": "#/$defs/TimeSignatureEvent" }
+    },
+    "sections": {
+      "type": "array",
+      "description": "Ordered top-level structural blocks (verse/chorus/...). Sections own their tracks; this makes a section a self-contained, relocatable, lockable unit for section-level regeneration.",
+      "items": { "$ref": "#/$defs/Section" }
+    },
+    "analysis": {
+      "description": "Song-level measured fingerprint. Derived/cacheable, NOT source of truth.",
+      "oneOf": [{ "$ref": "#/$defs/Analysis" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable opaque identifier (e.g. ULID). Enables semantic (id-matched) diffs, id-targeted locks/constraints, and reversible edits."
+    },
+    "Meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ppq", "timeUnit"],
+      "properties": {
+        "ppq": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 960,
+          "description": "Pulses (ticks) per quarter note. 960 chosen so common tuplets divide evenly (triplet=320, 16th=240, quintuplet=192)."
+        },
+        "timeUnit": {
+          "const": "tick",
+          "description": "Declares that all *Tick fields are integer pulses at ppq. Self-describing document."
+        },
+        "pitchRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "a4Hz": { "type": "number", "default": 440.0, "minimum": 1 }
+          },
+          "description": "Tuning reference used to relate measured f0 (Hz) to 12-TET MIDI numbers."
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Free-form origin tag, e.g. 'extraction:basic-pitch' or 'manual'."
+        }
+      }
+    },
+    "Key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tonic", "mode"],
+      "properties": {
+        "tonic": {
+          "type": "string",
+          "pattern": "^[A-G](#{1,2}|b{1,2})?$",
+          "description": "Spelled tonic pitch class, e.g. 'C', 'F#', 'Bb'. Spelling (not pitch-class number) so reharmonization/mode swaps stay enharmonically correct."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "major", "minor",
+            "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
+            "harmonicMinor", "melodicMinor"
+          ]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "TempoEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atTick", "bpm"],
+      "properties": {
+        "atTick": { "type": "integer", "minimum": 0, "description": "Absolute song-time tick where this tempo takes effect." },
+        "bpm": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "TimeSignatureEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atTick", "numerator", "denominator"],
+      "properties": {
+        "atTick": { "type": "integer", "minimum": 0 },
+        "numerator": { "type": "integer", "minimum": 1 },
+        "denominator": { "type": "integer", "enum": [1, 2, 4, 8, 16, 32] }
+      }
+    },
+    "Lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Freeze flag. locked=true => element is a hard constraint: transforms/generators must not alter it, and section-regeneration honors it as surrounding context. 'dimensions' allows partial freezes (e.g. freeze pitch but allow rhythm).",
+      "properties": {
+        "locked": { "type": "boolean", "default": false },
+        "dimensions": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["pitch", "rhythm", "harmony", "contour", "voicing"] },
+          "uniqueItems": true,
+          "description": "If present, only these aspects are frozen; absent/empty with locked=true means fully frozen."
+        }
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "description": "Lightweight origin trail per element. Keeps the document a clean value while still supporting diff/undo at the app layer (history = sequence of immutable snapshots).",
+      "properties": {
+        "source": {
+          "type": "string",
+          "pattern": "^(extracted|user|transform:[A-Za-z0-9_-]+|generated:[A-Za-z0-9_.-]+)$",
+          "description": "Who produced this element: 'extracted', 'user', 'transform:<name>', or 'generated:<model>'."
+        },
+        "parentId": { "$ref": "#/$defs/Id" },
+        "note": { "type": "string" }
+      }
+    },
+    "Pitch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["midi", "step", "alter", "octave", "name"],
+      "description": "12-TET symbolic pitch. 'step/alter/octave' (the spelling) is the source of truth for theory; 'midi' and 'name' are derived conveniences kept in sync (midi = (octave+1)*12 + pitchClass(step,alter)).",
+      "properties": {
+        "midi": { "type": "integer", "minimum": 0, "maximum": 127 },
+        "step": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G"] },
+        "alter": { "type": "integer", "minimum": -2, "maximum": 2, "description": "Accidental in semitones: -1 flat, +1 sharp, etc." },
+        "octave": { "type": "integer", "minimum": -1, "maximum": 9 },
+        "name": { "type": "string", "description": "Human-readable spelled name, e.g. 'C#4', 'Bb3'." }
+      }
+    },
+    "Measured": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Raw measured performance data extracted from the input audio for THIS note. The honest record of what was actually performed. NULLED by any transform that changes the note's pitch or timing (the performance no longer corresponds), which is why symbolic reversibility is scoped to symbolic fields only.",
+      "properties": {
+        "onsetSec": { "type": "number", "minimum": 0 },
+        "durationSec": { "type": "number", "exclusiveMinimum": 0 },
+        "f0Hz": { "type": "number", "exclusiveMinimum": 0 },
+        "centsDev": { "type": "number", "description": "Cents deviation of measured f0 from the assigned 12-TET pitch (signed)." },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "Note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "startTick", "durationTick", "pitch"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "startTick": { "type": "integer", "minimum": 0, "description": "Onset in ticks, RELATIVE to the owning section's startTick. Section-relative positions make sections relocatable." },
+        "durationTick": { "type": "integer", "exclusiveMinimum": 0 },
+        "pitch": { "$ref": "#/$defs/Pitch" },
+        "velocity": { "type": "integer", "minimum": 0, "maximum": 127, "default": 80 },
+        "tie": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "enum": ["start", "stop", "continue"] }
+          ],
+          "default": null
+        },
+        "lock": { "$ref": "#/$defs/Lock" },
+        "provenance": { "$ref": "#/$defs/Provenance" },
+        "measured": { "$ref": "#/$defs/Measured" }
+      }
+    },
+    "ChordRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pitchClass", "name"],
+      "properties": {
+        "pitchClass": { "type": "integer", "minimum": 0, "maximum": 11 },
+        "name": { "type": "string", "pattern": "^[A-G](#{1,2}|b{1,2})?$" }
+      }
+    },
+    "Chord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "startTick", "durationTick"],
+      "description": "Harmony as an abstract symbol (source of truth). 'voicing' (explicit pitches) is an optional DERIVED layer filled on demand by the revoice transform.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "startTick": { "type": "integer", "minimum": 0, "description": "Section-relative onset in ticks." },
+        "durationTick": { "type": "integer", "exclusiveMinimum": 0 },
+        "romanNumeral": { "type": "string", "description": "Function relative to the section/song key, e.g. 'V7', 'ii', 'bVI'. The handle reharmonization operates on." },
+        "chordSymbol": { "type": "string", "description": "Absolute lead-sheet symbol, e.g. 'G7', 'Dm'." },
+        "root": { "$ref": "#/$defs/ChordRoot" },
+        "quality": {
+          "type": "string",
+          "description": "e.g. 'major', 'minor', 'dominant-seventh', 'diminished', 'half-diminished-seventh', 'augmented'."
+        },
+        "inversion": { "type": "integer", "minimum": 0 },
+        "chordPitchClasses": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0, "maximum": 11 },
+          "uniqueItems": true,
+          "description": "Pitch classes that make up the chord (key-invariant), used to test melody-note membership during reharmonization."
+        },
+        "function": {
+          "type": "string",
+          "enum": ["tonic", "subdominant", "dominant", "predominant", "other"]
+        },
+        "voicing": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 127 }, "description": "Realized MIDI pitches (derived)." }
+          ],
+          "default": null
+        },
+        "lock": { "$ref": "#/$defs/Lock" },
+        "provenance": { "$ref": "#/$defs/Provenance" }
+      }
+    },
+    "Motif": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "noteIds"],
+      "description": "A named characteristic fragment, referenced by note id. Honored/echoed by generators and section-regeneration.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "noteIds": { "type": "array", "items": { "$ref": "#/$defs/Id" }, "minItems": 1 },
+        "label": { "type": "string" }
+      }
+    },
+    "Constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The RULES a transform / generator / section-regeneration must satisfy. Distinct from locks (which freeze concrete material); constraints describe the allowed space.",
+      "properties": {
+        "scalePitchClasses": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0, "maximum": 11 },
+          "uniqueItems": true,
+          "description": "Allowed (diatonic) pitch classes for this block."
+        },
+        "pitchRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minMidi", "maxMidi"],
+          "properties": {
+            "minMidi": { "type": "integer", "minimum": 0, "maximum": 127 },
+            "maxMidi": { "type": "integer", "minimum": 0, "maximum": 127 }
+          }
+        },
+        "harmonicRhythmTicks": { "type": "integer", "exclusiveMinimum": 0, "description": "Expected chord duration granularity." },
+        "motifs": { "type": "array", "items": { "$ref": "#/$defs/Motif" } },
+        "referenceSections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Id" },
+          "description": "Other section ids this block should relate to (e.g. chorus references verse)."
+        },
+        "styleHints": { "type": "string", "description": "Free-form guidance, primarily for LLM-based variation." }
+      }
+    },
+    "Track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "description": "A single voice/layer within a section. kind='melody' carries notes[]; kind='harmony' carries chords[]. 'voiceId' links the same logical voice across sections (cross-section identity).",
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "kind": { "type": "string", "enum": ["melody", "harmony"] },
+        "voiceId": { "type": "string", "description": "Stable logical-voice key shared across sections, e.g. 'lead', 'bass'." },
+        "role": { "type": "string", "description": "Human label, e.g. 'lead', 'counter', 'chords'." },
+        "instrumentHint": { "type": "string", "description": "Render-only hint (e.g. 'voice', 'piano'). Never affects symbolic truth." },
+        "lock": { "$ref": "#/$defs/Lock" },
+        "notes": { "type": "array", "items": { "$ref": "#/$defs/Note" } },
+        "chords": { "type": "array", "items": { "$ref": "#/$defs/Chord" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "melody" } }, "required": ["kind"] },
+          "then": { "required": ["notes"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "harmony" } }, "required": ["kind"] },
+          "then": { "required": ["chords"] }
+        }
+      ]
+    },
+    "Section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "startTick", "lengthTick", "tracks"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "type": {
+          "type": "string",
+          "enum": ["intro", "verse", "prechorus", "chorus", "bridge", "outro", "instrumental", "phrase", "other"]
+        },
+        "label": { "type": "string", "description": "Display name, e.g. 'Verse 1'." },
+        "startTick": { "type": "integer", "minimum": 0, "description": "ABSOLUTE song-time onset of the section in ticks." },
+        "lengthTick": { "type": "integer", "exclusiveMinimum": 0 },
+        "key": {
+          "description": "Local tonal center; may differ from song key (modulation). Anchors constraints and roman-numeral interpretation.",
+          "oneOf": [{ "$ref": "#/$defs/Key" }, { "type": "null" }]
+        },
+        "lock": { "$ref": "#/$defs/Lock" },
+        "constraints": { "$ref": "#/$defs/Constraints" },
+        "tracks": { "type": "array", "items": { "$ref": "#/$defs/Track" } },
+        "analysis": {
+          "oneOf": [{ "$ref": "#/$defs/Analysis" }, { "type": "null" }]
+        }
+      }
+    },
+    "Analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Measured melodic fingerprint. Every field is a real computed feature, not a vibe. Derived/cacheable; invalidated when symbolic content changes (bump analysisVersion or recompute).",
+      "properties": {
+        "analysisVersion": { "type": "string" },
+        "range": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minMidi": { "type": "integer" },
+            "maxMidi": { "type": "integer" },
+            "semitones": { "type": "integer" }
+          }
+        },
+        "intervalHistogram": {
+          "type": "object",
+          "description": "Signed semitone interval -> count.",
+          "patternProperties": { "^-?\\d+$": { "type": "integer", "minimum": 0 } },
+          "additionalProperties": false
+        },
+        "pitchClassHistogram": {
+          "type": "object",
+          "description": "Pitch class (0-11) -> count.",
+          "patternProperties": { "^(?:[0-9]|1[01])$": { "type": "integer", "minimum": 0 } },
+          "additionalProperties": false
+        },
+        "contour": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["U", "D", "R"] },
+          "description": "Parsons-style contour: Up / Down / Repeat between consecutive notes."
+        },
+        "rhythmicDensityNps": { "type": "number", "minimum": 0, "description": "Note onsets per second." },
+        "detectedMode": { "type": "string" },
+        "syncopation": { "type": "number", "minimum": 0, "description": "Normalized off-beat emphasis [0..1]." }
+      }
+    }
+  }
+}

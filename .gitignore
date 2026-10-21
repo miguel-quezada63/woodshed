@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.venv-bp/
+
+# Per-song work dirs: downloaded audio, stems, transcriptions (copyrighted material - never commit)
+runs/
+
+# Engine spike scratch output (regenerable)
+spikes/_out/
+
+# Any stray audio
+*.wav
+*.mp3
+*.m4a
+*.opus
+*.flac
+*.ogg
