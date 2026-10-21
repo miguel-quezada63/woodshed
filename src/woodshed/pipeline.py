@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from . import analyze, fetch, notation, stems, transcribe
+from . import analyze, fetch, listen, notation, stems, transcribe
 
 DEFAULT_PARTS = ("other", "vocals", "bass")
 
@@ -26,6 +26,7 @@ class Result:
     stems: Dict[str, Path]
     note_counts: Dict[str, int] = field(default_factory=dict)
     part_svgs: Dict[str, List[str]] = field(default_factory=dict)      # label -> svg pages
+    checks: Dict[str, Dict[str, Path]] = field(default_factory=dict)   # stem -> listen wavs
     files: List[Path] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -40,6 +41,7 @@ class Result:
             "  Stems    " + "  ".join(f"{s} {v:+.0f}dB" for s, v in self.levels.items()),
             "  Notes    " + "  ".join(f"{s}:{n}" for s, n in self.note_counts.items()),
             f"  Output   {self.run_dir / 'out'}",
+            "  Listen   " + "  ".join(f"{s}_check.wav" for s in self.checks),
         ]
         return "\n".join(lines)
 
@@ -78,15 +80,17 @@ def process(source: str, start: Optional[float] = None, end: Optional[float] = N
     log("Tracking beats...", 0.18)
     beats = analyze.detect_beats(analyze.pulse_source(stem_wavs, levels, mix), bpm_hint=bpm)
 
-    quantized = {}
-    t0, t1 = 0.2, 0.92                                   # transcription's share of the bar
+    raw = {}
+    t0, t1 = 0.2, 0.88                                   # transcription's share of the bar
     for i, stem in enumerate(parts):
         lo, hi = t0 + (t1 - t0) * i / len(parts), t0 + (t1 - t0) * (i + 1) / len(parts)
         msg = f"Transcribing {stem} ({i + 1}/{len(parts)}, {span})"
         log(msg, lo)
-        raw = transcribe.transcribe_stem(stem_wavs[stem], stem, cache=run_dir / "notes" / f"{stem}.json",
-                                         on_progress=lambda f, lo=lo, hi=hi, msg=msg: log(msg, lo + (hi - lo) * f))
-        quantized[stem] = transcribe.quantize(raw, beats, downbeat=downbeat, grid=grid)
+        raw[stem] = transcribe.transcribe_stem(stem_wavs[stem], stem, cache=run_dir / "notes" / f"{stem}.json",
+                                               on_progress=lambda f, lo=lo, hi=hi, msg=msg: log(msg, lo + (hi - lo) * f))
+    shift = transcribe.pickup_shift([n for ns in raw.values() for n in ns], beats, downbeat)
+    quantized = {s: transcribe.quantize(ns, beats, downbeat=downbeat, grid=grid, shift=shift)
+                 for s, ns in raw.items()}
     song = transcribe.build_song(title, key, beats, quantized, grid)
 
     log("Engraving sheet music...", t1)
@@ -108,5 +112,11 @@ def process(source: str, start: Optional[float] = None, end: Optional[float] = N
         xml = notation.write_musicxml(score, out / f"{stem}.musicxml")
         res.files.append(xml)
         res.part_svgs[label] = notation.render_svg(xml)
+
+    log("Rendering listen-check audio...", 0.95)
+    for stem in parts:
+        if quantized[stem]:
+            res.checks[stem] = listen.render_checks(stem, stem_wavs[stem], quantized[stem],
+                                                    beats, downbeat, shift, out)
     log("Done", 1.0)
     return res

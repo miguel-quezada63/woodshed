@@ -82,17 +82,32 @@ def _snap(x: float, grid: str) -> float:
     return round(x / step) * step
 
 
-def quantize(notes: List[Dict], beats: Beats, downbeat: int = 0, grid: str = "16th"):
+def pickup_shift(all_notes: List[Dict], beats: Beats, downbeat: int = 0) -> int:
+    """Whole bars (in beats) to prepend so the earliest note of ANY part lands at
+    beat >= 0. Shared by all parts so their bar 1 lines up in the score."""
+    if not all_notes:
+        return 0
+    first = float(beats.to_beats([min(n["onset"] for n in all_notes)])[0]) - downbeat
+    return math.ceil(-first / 4) * 4 if first < 0 else 0
+
+
+def score_to_seconds(beat_pos, beats: Beats, downbeat: int, shift: int):
+    """Inverse of quantize's mapping: score beat position -> seconds in the audio."""
+    return beats.to_seconds(np.asarray(beat_pos, dtype=float) - shift + downbeat)
+
+
+def quantize(notes: List[Dict], beats: Beats, downbeat: int = 0, grid: str = "16th",
+             shift: Optional[int] = None):
     """-> list of (start_beat, dur_beat, note_dict), monophonic, start >= 0.
-    `downbeat` = which detected beat (0-3) is beat 1 of a bar."""
+    `downbeat` = which detected beat (0-3) is beat 1 of a bar; `shift` = pickup
+    beats from pickup_shift() (computed from these notes alone if omitted)."""
     if not notes:
         return []
     step = 0.25 if grid == "16th" else 0.5
-    on = beats.to_beats([n["onset"] for n in notes]) - downbeat
-    off = beats.to_beats([n["offset"] for n in notes]) - downbeat
-    if on.min() < 0:                                     # pickup: prepend whole bars
-        shift = math.ceil(-on.min() / 4) * 4
-        on, off = on + shift, off + shift
+    if shift is None:
+        shift = pickup_shift(notes, beats, downbeat)
+    on = beats.to_beats([n["onset"] for n in notes]) - downbeat + shift
+    off = beats.to_beats([n["offset"] for n in notes]) - downbeat + shift
 
     events = []
     for n, a, b in zip(notes, on, off):
