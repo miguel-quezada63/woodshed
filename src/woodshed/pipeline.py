@@ -44,15 +44,25 @@ class Result:
         return "\n".join(lines)
 
 
+def _print_log(msg: str, frac: Optional[float] = None) -> None:
+    print(f"\r[{frac:4.0%}] {msg:<70}" if frac is not None else f"\n{msg}", end="", flush=True)
+
+
 def process(source: str, start: Optional[float] = None, end: Optional[float] = None,
             parts: Sequence[str] = DEFAULT_PARTS, grid: str = "16th", downbeat: int = 0,
             bpm: Optional[float] = None, flute_fit: bool = True,
-            log: Callable[[str], None] = print) -> Result:
+            log: Callable[[str, Optional[float]], None] = _print_log) -> Result:
+    """`log(message, fraction_done)` - fraction is 0..1 for the whole job."""
     if grid not in transcribe.GRIDS:
         raise ValueError(f"grid must be one of {transcribe.GRIDS}")
-    log("Fetching audio...")
+    log("Fetching audio...", 0.0)
     run_dir, mix, title = fetch.fetch(source, start, end)
-    stem_wavs = stems.separate(mix, run_dir, log=log)
+    import soundfile as sf
+    secs = sf.info(str(mix)).duration
+    length = f"{int(secs // 60)}:{int(secs % 60):02d}"
+    span = f"full track ({length})" if start is None and end is None else f"{length} section"
+    log(f"Separating stems - {span}...", 0.03)
+    stem_wavs = stems.separate(mix, run_dir, log=lambda m: log(m, 0.03))
     levels = stems.stem_levels(stem_wavs)
 
     key_cache = run_dir / "key.json"
@@ -60,22 +70,26 @@ def process(source: str, start: Optional[float] = None, end: Optional[float] = N
         d = json.loads(key_cache.read_text(encoding="utf-8"))
         key = analyze.KeyInfo(d["tonic_pc"], d["mode"], d["confidence"], [tuple(x) for x in d["ranked"]])
     else:
-        log("Detecting key...")
+        log("Detecting key...", 0.15)
         pitched = [p for s, p in stem_wavs.items() if s != "drums" and levels[s] > -30]
         key = analyze.detect_key(pitched)
         key_cache.write_text(json.dumps(key.__dict__), encoding="utf-8")
 
-    log("Tracking beats...")
+    log("Tracking beats...", 0.18)
     beats = analyze.detect_beats(analyze.pulse_source(stem_wavs, levels, mix), bpm_hint=bpm)
 
     quantized = {}
-    for stem in parts:
-        log(f"Transcribing {stem}...")
-        raw = transcribe.transcribe_stem(stem_wavs[stem], stem, cache=run_dir / "notes" / f"{stem}.json")
+    t0, t1 = 0.2, 0.92                                   # transcription's share of the bar
+    for i, stem in enumerate(parts):
+        lo, hi = t0 + (t1 - t0) * i / len(parts), t0 + (t1 - t0) * (i + 1) / len(parts)
+        msg = f"Transcribing {stem} ({i + 1}/{len(parts)}, {span})"
+        log(msg, lo)
+        raw = transcribe.transcribe_stem(stem_wavs[stem], stem, cache=run_dir / "notes" / f"{stem}.json",
+                                         on_progress=lambda f, lo=lo, hi=hi, msg=msg: log(msg, lo + (hi - lo) * f))
         quantized[stem] = transcribe.quantize(raw, beats, downbeat=downbeat, grid=grid)
     song = transcribe.build_song(title, key, beats, quantized, grid)
 
-    log("Engraving sheet music...")
+    log("Engraving sheet music...", t1)
     out = run_dir / "out"
     out.mkdir(exist_ok=True)
     res = Result(run_dir=run_dir, title=title, key=key, beats=beats, levels=levels, stems=stem_wavs,
@@ -94,4 +108,5 @@ def process(source: str, start: Optional[float] = None, end: Optional[float] = N
         xml = notation.write_musicxml(score, out / f"{stem}.musicxml")
         res.files.append(xml)
         res.part_svgs[label] = notation.render_svg(xml)
+    log("Done", 1.0)
     return res

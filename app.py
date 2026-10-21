@@ -56,7 +56,7 @@ def run(link, upload, start, end, parts, grid, downbeat, bpm, flute_fit, progres
         r = pipeline.process(source, fetch.parse_time(start), fetch.parse_time(end),
                              parts=parts, grid=grid, downbeat=int(downbeat),
                              bpm=float(bpm) if bpm else None, flute_fit=flute_fit,
-                             log=lambda m: progress(None, desc=m))
+                             log=lambda m, f=None: progress(f, desc=m))
     except Exception as e:                                   # surface, don't crash the UI
         return [f"**Error:** {type(e).__name__}: {e}", "", None, *empty]
     return [summary_md(r), sheets_html(r), [str(f) for f in r.files],

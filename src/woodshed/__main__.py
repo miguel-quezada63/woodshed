@@ -21,7 +21,7 @@ def main(argv=None):
     res = pipeline.process(a.source, fetch.parse_time(a.start), fetch.parse_time(a.end),
                            parts=[p.strip() for p in a.parts.split(",") if p.strip()],
                            grid=a.grid, downbeat=a.downbeat, bpm=a.bpm, flute_fit=not a.concert)
-    print()
+    print("\n")
     print(res.summary())
 
 
