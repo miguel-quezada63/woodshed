@@ -47,7 +47,7 @@ def sheets_html(r: pipeline.Result) -> str:
 
 def run(link, upload, start, end, parts, grid, downbeat, bpm, flute_fit, progress=gr.Progress()):
     source = upload or (link or "").strip()
-    empty = [None] * len(stems.STEMS)
+    empty = [None] * (len(stems.STEMS) + len(PART_CHOICES))
     if not source:
         return ["Paste a link or upload a file first.", "", None, *empty]
     if not parts:
@@ -59,8 +59,10 @@ def run(link, upload, start, end, parts, grid, downbeat, bpm, flute_fit, progres
                              log=lambda m, f=None: progress(f, desc=m))
     except Exception as e:                                   # surface, don't crash the UI
         return [f"**Error:** {type(e).__name__}: {e}", "", None, *empty]
-    return [summary_md(r), sheets_html(r), [str(f) for f in r.files],
-            *[str(r.stems[s]) for s in stems.STEMS]]
+    listen_files = [str(p) for c in r.checks.values() for p in c.values()]
+    checks = [str(r.checks[v]["check"]) if v in r.checks else None for _, v in PART_CHOICES]
+    return [summary_md(r), sheets_html(r), [str(f) for f in r.files] + listen_files,
+            *[str(r.stems[s]) for s in stems.STEMS], *checks]
 
 
 def build() -> gr.Blocks:
@@ -87,6 +89,11 @@ def build() -> gr.Blocks:
                 flute_fit = gr.Checkbox(value=True, label="Move parts into flute range (octaves only)")
                 go = gr.Button("Transcribe", variant="primary")
         summary = gr.Markdown()
+        with gr.Accordion("Listen check: the original part with the transcription played on top "
+                          "(right notes blend in, wrong ones clash - headphones help for bass)", open=True):
+            with gr.Row():
+                check_audio = [gr.Audio(label=label, type="filepath", interactive=False)
+                               for label, _ in PART_CHOICES]
         sheets = gr.HTML()
         files = gr.File(label="Downloads (MusicXML opens in MuseScore; MIDI; Song JSON)",
                         file_count="multiple")
@@ -95,7 +102,7 @@ def build() -> gr.Blocks:
                 stem_audio = [gr.Audio(label=s, type="filepath", interactive=False)
                               for s in stems.STEMS]
         go.click(run, [link, upload, start, end, parts, grid, downbeat, bpm, flute_fit],
-                 [summary, sheets, files, *stem_audio])
+                 [summary, sheets, files, *stem_audio, *check_audio])
     return demo
 
 

@@ -110,6 +110,17 @@ class Beats:
         out = np.where(t > bt[-1], idx[-1] + (t - bt[-1]) / period, out)
         return out
 
+    def to_seconds(self, b) -> np.ndarray:
+        """Inverse of to_beats: beat index (float) -> seconds."""
+        b = np.asarray(b, dtype=float)
+        bt = self.times
+        idx = np.arange(len(bt), dtype=float)
+        period = float(np.median(np.diff(bt))) if len(bt) > 1 else 60.0 / self.bpm
+        out = np.interp(b, idx, bt)
+        out = np.where(b < 0, bt[0] + b * period, out)
+        out = np.where(b > idx[-1], bt[-1] + (b - idx[-1]) * period, out)
+        return out
+
 
 def detect_beats(wav: Path, bpm_hint: Optional[float] = None, sr: int = 22050) -> Beats:
     import librosa
